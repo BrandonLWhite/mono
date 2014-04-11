@@ -150,7 +150,15 @@ mono_mlist_prepend (MonoMList* list, MonoObject *data)
 {
 	MonoMList* res = mono_mlist_alloc (data);
 	if (list)
+	{
+		int iLength = mono_mlist_length(list);
 		MONO_OBJECT_SETREF (res, next, list);
+		
+		if(iLength >= 20)
+		{
+			printf("mono_mlist=%i ", iLength);	// Never hits!
+		}		
+	}
 	return res;
 }
 
@@ -168,8 +176,13 @@ mono_mlist_append (MonoMList* list, MonoObject *data)
 {
 	MonoMList* res = mono_mlist_alloc (data);
 	if (list) {
+		int iLength = mono_mlist_length(list);	
 		MonoMList* last = mono_mlist_last (list);
 		MONO_OBJECT_SETREF (last, next, res);
+		if(iLength >= 20)
+		{
+			printf("mono_mlist=%i ", iLength);	// Never hits!
+		}
 		return list;
 	} else {
 		return res;

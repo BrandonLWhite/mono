@@ -20,7 +20,7 @@
 #include <mono/metadata/exception.h>
 #include <mono/metadata/environment.h>
 #include <mono/metadata/mono-config.h>
-#include <mono/metadata/mono-mlist.h>
+#include <mono/metadata/mono-mlist.h>	// MList is included... so wtf?
 #include <mono/metadata/mono-perfcounters.h>
 #include <mono/metadata/socket-io.h>
 #include <mono/metadata/mono-cq.h>
@@ -439,7 +439,7 @@ mono_thread_pool_remove_socket (int sock)
 	MonoMList *list;
 	MonoSocketAsyncResult *state;
 	MonoObject *ares;
-
+//printf("mono_thread_pool_remove_socket (%i)\n", sock);	// Never called.
 	if (socket_io_data.inited == 0)
 		return;
 
@@ -552,9 +552,13 @@ socket_io_add (MonoAsyncResult *ares, MonoSocketAsyncResult *state)
 	if (list == NULL) {
 		list = mono_mlist_alloc ((MonoObject*)state);
 		is_new = TRUE;
+		
+//		printf("mono_mlist_alloc (%i, %p, %p)\n", fd, GINT_TO_POINTER (fd), state->handle);	// This is what is getting hammered.  Same fd. Why isn't the GC collecting it then?
 	} else {
 		list = mono_mlist_append (list, (MonoObject*)state);
 		is_new = FALSE;
+		
+//		printf("mono_mlist_append. Length = %i.\n", mono_mlist_length(list));	// Damn! This is never called!
 	}
 
 	mono_g_hash_table_replace (data->sock_to_state, state->handle, list);
@@ -1093,7 +1097,13 @@ threadpool_append_jobs (ThreadPool *tp, MonoObject **jobs, gint njobs)
 		if (!tp->is_io && mono_wsq_local_push (ar))
 			continue;
 
-		mono_cq_enqueue (tp->queue, ar);
+if(tp->is_io)
+{
+// Definitely hitting here.
+//	printf("\n threadpool_append_jobs(async_io_tp): mono_cq_enqueue(%p),  ", tp->queue);
+}
+		mono_cq_enqueue (tp->queue, ar);	// Looky here.  This adds a reference to MonoCQItem 
+// I feel strongly that this is where we are leaking.  But under what circumstance?  And what cleans it up?		
 	}
 
 	for (i = 0; tp->waiting > 0 && i < MIN(njobs, tp->max_threads); i++)
@@ -1297,15 +1307,87 @@ try_steal (MonoWSQ *local_wsq, gpointer *data, gboolean retry)
 	} while (retry && ms < 11);
 }
 
+struct _MonoMList {
+	MonoObject object;
+	MonoMList *next;
+	MonoObject *data;
+};
+
+struct _MonoCQItem {
+	MonoObject object;
+	MonoArray *array; // MonoObjects
+	MonoArray *array_state; // byte array
+	volatile gint32 first;
+	volatile gint32 last;
+};
+typedef struct _MonoCQItem MonoCQItem;
+
+struct _MonoCQ {
+	MonoMList *head;
+	MonoMList *tail;
+	volatile gint32 count;
+};
+
 static gboolean
 dequeue_or_steal (ThreadPool *tp, gpointer *data, MonoWSQ *local_wsq)
 {
 	MonoCQ *queue = tp->queue;
+MonoMList * pHead = queue->head;
+MonoMList * pTail = queue->tail;
+	
 	if (mono_runtime_is_shutting_down () || !queue)
 		return FALSE;
+		
+if(tp->is_io && queue->count)
+{
+//printf("[%i %i %i %s]", queue->count, mono_mlist_length(pHead),  mono_mlist_length(pTail), pTail == pHead ? "*" : "");
+}
+		
 	mono_cq_dequeue (queue, (MonoObject **) data);
+	
 	if (!tp->is_io && !*data)
 		try_steal (local_wsq, data, FALSE);
+		
+if(tp->is_io /*&& *data*/ && 0)
+{		
+// Crap.  By the time we get here, there's nothing left in the queue.  So none of this matters I don't think.
+// I'm going to have to fix this in mono_cqitem_try_dequeue.
+//	printf("dequeue_or_steal (%p),  ", queue);
+	
+// HACK:  Delete the queue, then reallocate it!
+// Dang, this doesn't seem to stop the leak.
+// Try reaching in and freeing the MonoMList and their references to MonoCQItems.
+
+/*
+MonoCQItem * pcqItem = (MonoCQItem *)pHead->data; // delete it, null it.
+
+printf("|%i %i %i|", queue->count, mono_mlist_length(pHead),  mono_mlist_length(pTail));
+
+MONO_OBJECT_SETREF (pcqItem, array, NULL);
+MONO_OBJECT_SETREF (pcqItem, array_state, NULL);
+
+// mlist doesn't have any deletion calls, because it is GCed.  still, I need to 
+// ditch all refs.
+mono_mlist_remove_item(pHead, pHead);
+mono_mlist_remove_item(pTail, pTail);
+mono_mlist_set_data(pHead, NULL);
+mono_mlist_set_data(pTail, NULL);
+
+// Crap!  MONO_GC_UNREGISTER_ROOT takes the address of the item you pass in!  Holy smokes.
+// So it totally follows the pointer itself, not the thing that is pointed to.
+MONO_GC_UNREGISTER_ROOT (queue->head); //[Fixed. You have to use the original pointer!]
+MONO_GC_UNREGISTER_ROOT (queue->tail); //[Fixed. You have to use the original pointer!]
+*/
+
+// Hmmm, what if I'm barking up the wrong tree with this call?
+//
+threadpool_free_queue(tp);
+tp->queue = mono_cq_create ();
+
+pHead = NULL;
+pTail = NULL;
+}
+		
 	return (*data != NULL);
 }
 

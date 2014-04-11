@@ -145,6 +145,8 @@ tp_epoll_wait (gpointer p)
 			evt = &events [i];
 			fd = evt->data.fd;
 			list = mono_g_hash_table_lookup (socket_io_data->sock_to_state, GINT_TO_POINTER (fd));
+//printf("tp_epoll_wait: mono_mlist_length = %i, ", mono_mlist_length(list));
+						
 			if (list != NULL && (evt->events & (EPOLLIN | EPOLL_ERRORS)) != 0) {
 				ares = get_io_event (&list, MONO_POLLIN);
 				if (ares != NULL)
@@ -157,11 +159,12 @@ tp_epoll_wait (gpointer p)
 					async_results [nresults++] = ares;
 			}
 
+// Since I'm landing in the else below, I have to assume the list is null here.			
 			if (list != NULL) {
 				int p;
 
 				mono_g_hash_table_replace (socket_io_data->sock_to_state, GINT_TO_POINTER (fd), list);
-				p = get_events_from_list (list);
+				p = get_events_from_list (list);	
 				evt->events = (p & MONO_POLLOUT) ? EPOLLOUT : 0;
 				evt->events |= (p & MONO_POLLIN) ? EPOLLIN : 0;
 				if (epoll_ctl (epollfd, EPOLL_CTL_MOD, fd, evt) == -1) {
@@ -171,6 +174,13 @@ tp_epoll_wait (gpointer p)
 					}
 				}
 			} else {
+// SPIKE HACK!  Hmm, doesn't seem to have much effect.
+//list = mono_g_hash_table_lookup (socket_io_data->sock_to_state, GINT_TO_POINTER (fd));
+//MONO_OBJECT_SETREF
+//mono_mlist_remove_item(list, list);
+			
+//printf("tp_epoll_wait--mono_g_hash_table_remove (%i)\n", fd); // OK, this is getting called.  So why isn't it freed up?!
+// Well, it's not the hashtable that is leaking.  It is the list inside it!
 				mono_g_hash_table_remove (socket_io_data->sock_to_state, GINT_TO_POINTER (fd));
 				epoll_ctl (epollfd, EPOLL_CTL_DEL, fd, evt);
 			}

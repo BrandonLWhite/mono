@@ -82,9 +82,18 @@ mono_cq_destroy (MonoCQ *cq)
 	if (!cq)
 		return;
 
+	MONO_OBJECT_SETREF (cq->head, next, NULL);
+	MONO_OBJECT_SETREF (cq->head, data, NULL);
+	MONO_OBJECT_SETREF (cq->tail, next, NULL);
+	MONO_OBJECT_SETREF (cq->tail, data, NULL);
+		
 	mono_gc_bzero_aligned (cq, sizeof (MonoCQ));
+//MONO_OBJECT_SETREF (((MonoCQItem *)cq->head), array, NULL);	
+//MONO_OBJECT_SETREF (((MonoCQItem *)cq->head), array_state, NULL);	
+	
 	MONO_GC_UNREGISTER_ROOT (cq->tail);
 	MONO_GC_UNREGISTER_ROOT (cq->head);
+
 	g_free (cq);
 }
 
@@ -104,7 +113,7 @@ mono_cq_add_node (MonoCQ *cq)
 	MonoMList *n;
 	MonoMList *prev_tail;
 
-	CQ_DEBUG ("Adding node");
+	printf ("[Allocate & Adding node]");
 	n = mono_mlist_alloc ((MonoObject *) mono_cqitem_alloc ());
 	prev_tail = cq->tail;
 	MONO_OBJECT_SETREF (prev_tail, next, n);
@@ -127,7 +136,7 @@ mono_cqitem_try_enqueue (MonoCQ *cq, MonoObject *obj)
 	do {
 		pos = queue->last;
 		if (pos >= CQ_ARRAY_SIZE) {
-			CQ_DEBUG ("enqueue(): pos >= CQ_ARRAY_SIZE, %d >= %d", pos, CQ_ARRAY_SIZE);
+			printf ("enqueue(): pos >= CQ_ARRAY_SIZE, %d >= %d", pos, CQ_ARRAY_SIZE);
 			return FALSE;
 		}
 
@@ -136,7 +145,7 @@ mono_cqitem_try_enqueue (MonoCQ *cq, MonoObject *obj)
 			STORE_STORE_FENCE;
 			mono_array_set_fast (queue->array_state, char, pos, TRUE);
 			if ((pos + 1) == CQ_ARRAY_SIZE) {
-				CQ_DEBUG ("enqueue(): pos + 1 == CQ_ARRAY_SIZE, %d. Adding node.", CQ_ARRAY_SIZE);
+				printf ("enqueue(): pos + 1 == CQ_ARRAY_SIZE, %d -- Adding node.\n", CQ_ARRAY_SIZE);
 				mono_cq_add_node (cq);
 			}
 			return TRUE;
@@ -167,6 +176,7 @@ mono_cq_remove_node (MonoCQ *cq)
 	MonoMList *old_head;
 
 	CQ_DEBUG ("Removing node");
+printf("[Removing node]");
 	old_head = cq->head;
 	/* Not needed now that array_state is GC memory
 	MonoCQItem *queue;
@@ -188,6 +198,12 @@ mono_cq_remove_node (MonoCQ *cq)
 	while (old_head->next == NULL)
 		SleepEx (0, FALSE);
 	cq->head = old_head->next;
+	
+	// BW: Try killing references in the old head.
+	// OMG! This fixes it!!!!!!!!!!!!!!!  Is there one in particular?
+	MONO_OBJECT_SETREF (old_head, next, NULL);
+//	MONO_OBJECT_SETREF (old_head, data, NULL);
+	
 	old_head = NULL;
 }
 
@@ -216,6 +232,7 @@ mono_cqitem_try_dequeue (MonoCQ *cq, MonoObject **obj)
 			Here don't need to fence since the only spot that reads it is the one above.
 			Additionally, the first store is superfluous, so it can happen OOO with the second.
 			*/
+//#define mono_array_set(array,type,index,value)
 			mono_array_set (queue->array, MonoObject *, pos, NULL);
 			mono_array_set (queue->array_state, char, pos, FALSE);
 			
